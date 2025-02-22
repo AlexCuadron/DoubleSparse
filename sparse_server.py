@@ -9,11 +9,40 @@ import time
 import uuid
 import logging
 import argparse
+import pkg_resources
 from typing import List, Dict, Optional
 import torch
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+def check_and_install_transformers():
+    """Check transformers version and install required version if needed."""
+    try:
+        import transformers
+        version = pkg_resources.get_distribution('transformers').version
+        if pkg_resources.parse_version(version) < pkg_resources.parse_version('4.37.0'):
+            logger.warning(f"Transformers version {version} does not support Qwen2. Installing 4.37.0...")
+            import subprocess
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "transformers>=4.37.0"])
+            logger.info("Transformers updated successfully. Reloading modules...")
+            import importlib
+            importlib.reload(transformers)
+    except Exception as e:
+        logger.error(f"Error checking/installing transformers: {str(e)}")
+        raise
+
+# Configure logging first
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Check and install dependencies
+check_and_install_transformers()
+
+# Now import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
 # Configure logging
@@ -85,10 +114,25 @@ def create_app(model_path: str, heavy_const: int, group_factor: int, channel: st
     )
 
     # Load model and convert to sparse attention
-    kwargs = {"torch_dtype": torch.float16, "device_map": "auto"}
-    model = AutoModelForCausalLM.from_pretrained(model_path, **kwargs)
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    config = AutoConfig.from_pretrained(model_path)
+    try:
+        logger.info(f"Loading model from {model_path}...")
+        kwargs = {"torch_dtype": torch.float16, "device_map": "auto"}
+        config = AutoConfig.from_pretrained(model_path)
+        
+        # Check if model type is supported
+        model_type = config.model_type
+        logger.info(f"Detected model type: {model_type}")
+        
+        if model_type == "qwen2":
+            # For Qwen2, we need transformers>=4.37.0
+            import transformers
+            version = pkg_resources.get_distribution('transformers').version
+            if pkg_resources.parse_version(version) < pkg_resources.parse_version('4.37.0'):
+                raise ImportError(f"Qwen2 requires transformers>=4.37.0, but found {version}")
+        
+        model = AutoModelForCausalLM.from_pretrained(model_path, **kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        logger.info("Model loaded successfully")
 
     # Load channel config if available
     channel_path = os.path.join("config", model_path.split('/')[-1] + ".json")
