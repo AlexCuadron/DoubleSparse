@@ -53,8 +53,21 @@ class ChatCompletionResponse(BaseModel):
     choices: List[ChatCompletionResponseChoice] = Field(..., description="Generated completions")
     usage: CompletionUsage = Field(..., description="Token usage statistics")
 
+def clean_model_path(model_path: str) -> str:
+    """Convert URL to model identifier if needed."""
+    if model_path.startswith(('http://', 'https://')):
+        # Remove protocol and domain
+        parts = model_path.split('/')
+        if 'huggingface.co' in parts:
+            # Get parts after huggingface.co
+            idx = parts.index('huggingface.co')
+            return '/'.join(parts[idx + 1:])
+    return model_path
+
 def create_app(model_path: str, heavy_const: int, group_factor: int, channel: str = "qk", offloading: bool = False):
     """Create FastAPI app with the specified model and parameters."""
+    # Clean model path
+    model_path = clean_model_path(model_path)
     # Initialize FastAPI app
     app = FastAPI(
         title="DoubleSparse API",
