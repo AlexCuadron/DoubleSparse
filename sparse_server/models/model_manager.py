@@ -13,6 +13,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from evaluation.modify_llama import convert_kvcache_llama_heavy_recent, convert_llama_channel_config
 from evaluation.modify_mistral import convert_kvcache_mistral_heavy_recent, convert_mistral_channel_config
+from evaluation.modify_qwen2 import convert_kvcache_qwen2_heavy_recent, convert_qwen2_channel_config
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +91,22 @@ class ModelManager:
                         channel_config,
                         self.channel
                     )
+            elif self.architecture == "qwen2":
+                logger.info("Converting model to use Qwen2 sparse attention...")
+                self.model = convert_kvcache_qwen2_heavy_recent(
+                    self.model,
+                    config,
+                    self.heavy_const,
+                    self.group_factor
+                )
+                if channel_config:
+                    self.model = convert_qwen2_channel_config(
+                        self.model,
+                        channel_config,
+                        self.channel
+                    )
             else:
-                raise ValueError(f"Unsupported architecture: {self.architecture}")
+                raise ValueError(f"Unsupported architecture: {self.architecture}. Supported: llama, mistral, qwen2")
             
             # Set model to evaluation mode
             self.model.eval()

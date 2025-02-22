@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     
     # Model Settings
     DEFAULT_MODEL: str = "meta-llama/Llama-2-7b-chat-hf"
-    MODEL_ARCHITECTURE: str = "llama"  # Model architecture (llama, mistral)
+    MODEL_ARCHITECTURE: str = "llama"  # Model architecture (llama, mistral, qwen2)
     
     # Sparse Attention Settings
     HEAVY_CONST: int = 128    # Number of tokens to keep for attention

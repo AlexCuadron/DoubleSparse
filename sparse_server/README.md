@@ -78,8 +78,10 @@ API_VERSION="1.0.0"
 HOST="0.0.0.0"
 PORT=52309
 DEFAULT_MODEL="meta-llama/Llama-2-7b-chat-hf"
+MODEL_ARCHITECTURE="llama"  # llama, mistral, or qwen2
 HEAVY_CONST=128    # Sparse attention parameter
 GROUP_FACTOR=4     # Sparse attention parameter
+CHANNEL="qk"       # Channel selection (q, k, qk)
 ```
 
 ### Sparse Attention Parameters
