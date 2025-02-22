@@ -20,8 +20,12 @@ class Settings(BaseSettings):
     
     # Model Settings
     DEFAULT_MODEL: str = "meta-llama/Llama-2-7b-chat-hf"
-    HEAVY_CONST: int = 128  # Sparse attention parameter
-    GROUP_FACTOR: int = 4   # Sparse attention parameter
+    MODEL_ARCHITECTURE: str = "llama"  # Model architecture (llama, mistral)
+    
+    # Sparse Attention Settings
+    HEAVY_CONST: int = 128    # Number of tokens to keep for attention
+    GROUP_FACTOR: int = 4     # Channel grouping factor
+    CHANNEL: str = "qk"       # Channel selection (q, k, qk)
     
     # Generation Defaults
     DEFAULT_MAX_TOKENS: int = 100
