@@ -13,7 +13,6 @@ from typing import List, Dict, Optional
 import torch
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
@@ -35,7 +34,6 @@ class ChatCompletionRequest(BaseModel):
     temperature: Optional[float] = Field(0.7, description="Sampling temperature")
     top_p: Optional[float] = Field(0.95, description="Top-p sampling parameter")
     max_tokens: Optional[int] = Field(100, description="Maximum number of tokens to generate")
-    stream: Optional[bool] = Field(False, description="Whether to stream the response")
 
 class CompletionUsage(BaseModel):
     prompt_tokens: int = Field(..., description="Number of tokens in the prompt")
@@ -54,22 +52,6 @@ class ChatCompletionResponse(BaseModel):
     model: str = Field(..., description="Model used for completion")
     choices: List[ChatCompletionResponseChoice] = Field(..., description="Generated completions")
     usage: CompletionUsage = Field(..., description="Token usage statistics")
-
-class DeltaMessage(BaseModel):
-    role: Optional[str] = Field(None, description="Role of the delta message")
-    content: Optional[str] = Field(None, description="Content of the delta message")
-
-class ChatCompletionStreamChoice(BaseModel):
-    index: int = Field(..., description="Index of the choice")
-    delta: DeltaMessage = Field(..., description="Delta message content")
-    finish_reason: Optional[str] = Field(None, description="Reason for finishing")
-
-class ChatCompletionStreamResponse(BaseModel):
-    id: str = Field(..., description="Unique identifier for the completion")
-    object: str = Field("chat.completion.chunk", description="Object type")
-    created: int = Field(..., description="Unix timestamp of creation")
-    model: str = Field(..., description="Model used for completion")
-    choices: List[ChatCompletionStreamChoice] = Field(..., description="Generated completion chunks")
 
 def create_app(model_path: str, heavy_const: int, group_factor: int, channel: str = "qk", offloading: bool = False):
     """Create FastAPI app with the specified model and parameters."""
@@ -172,12 +154,6 @@ def create_app(model_path: str, heavy_const: int, group_factor: int, channel: st
     async def create_chat_completion(request: ChatCompletionRequest):
         """Create a chat completion."""
         try:
-            if request.stream:
-                return StreamingResponse(
-                    stream_chat_completion(request),
-                    media_type='text/event-stream'
-                )
-
             # Prepare input
             prompt = _prepare_prompt([msg.dict() for msg in request.messages])
             inputs = tokenizer(prompt, return_tensors="pt", padding=True)
@@ -226,126 +202,6 @@ def create_app(model_path: str, heavy_const: int, group_factor: int, channel: st
         except Exception as e:
             logger.error(f"Error during chat completion: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
-
-    async def stream_chat_completion(request: ChatCompletionRequest):
-        """Stream chat completion chunks."""
-        completion_id = f"chatcmpl-{str(uuid.uuid4())}"
-        
-        try:
-            # Start with role
-            chunk = ChatCompletionStreamResponse(
-                id=completion_id,
-                created=int(time.time()),
-                model=request.model,
-                choices=[
-                    ChatCompletionStreamChoice(
-                        index=0,
-                        delta=DeltaMessage(role="assistant"),
-                        finish_reason=None
-                    )
-                ]
-            )
-            yield f"data: {chunk.json()}\n\n"
-
-            # Prepare input
-            prompt = _prepare_prompt([msg.dict() for msg in request.messages])
-            inputs = tokenizer(prompt, return_tensors="pt", padding=True)
-            input_ids = inputs.input_ids.to(model.device)
-            attention_mask = inputs.attention_mask.to(model.device) if hasattr(inputs, 'attention_mask') else None
-
-            # Stream generation
-            generated_tokens = []
-            past_key_values = None
-
-            with torch.no_grad():
-                for _ in range(request.max_tokens or 100):
-                    outputs = model(
-                        input_ids if past_key_values is None else input_ids[:, -1:],
-                        attention_mask=attention_mask,
-                        past_key_values=past_key_values,
-                        use_cache=True
-                    )
-
-                    next_token_logits = outputs.logits[:, -1, :]
-                    if request.temperature > 0:
-                        probs = torch.nn.functional.softmax(next_token_logits / request.temperature, dim=-1)
-                        if request.top_p < 1.0:
-                            sorted_probs, sorted_indices = torch.sort(probs, descending=True)
-                            cumsum_probs = torch.cumsum(sorted_probs, dim=-1)
-                            sorted_indices_to_remove = cumsum_probs > request.top_p
-                            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-                            sorted_indices_to_remove[..., 0] = 0
-                            indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                            probs.masked_fill_(indices_to_remove, 0.0)
-                            next_token = torch.multinomial(probs, num_samples=1)
-                    else:
-                        next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
-
-                    generated_tokens.append(next_token[0].item())
-
-                    # Update inputs and attention mask
-                    input_ids = torch.cat([input_ids, next_token], dim=-1)
-                    if attention_mask is not None:
-                        attention_mask = torch.cat([
-                            attention_mask,
-                            attention_mask.new_ones((attention_mask.shape[0], 1))
-                        ], dim=-1)
-
-                    # Update past key values
-                    past_key_values = outputs.past_key_values
-
-                    # Decode and yield new token
-                    current_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-                    chunk = ChatCompletionStreamResponse(
-                        id=completion_id,
-                        created=int(time.time()),
-                        model=request.model,
-                        choices=[
-                            ChatCompletionStreamChoice(
-                                index=0,
-                                delta=DeltaMessage(content=current_text),
-                                finish_reason=None
-                            )
-                        ]
-                    )
-                    yield f"data: {chunk.json()}\n\n"
-
-                    # Check for EOS token
-                    if next_token[0].item() == tokenizer.eos_token_id:
-                        break
-
-            # Send the final chunk
-            chunk = ChatCompletionStreamResponse(
-                id=completion_id,
-                created=int(time.time()),
-                model=request.model,
-                choices=[
-                    ChatCompletionStreamChoice(
-                        index=0,
-                        delta=DeltaMessage(),
-                        finish_reason="stop"
-                    )
-                ]
-            )
-            yield f"data: {chunk.json()}\n\n"
-            yield "data: [DONE]\n\n"
-
-        except Exception as e:
-            logger.error(f"Error during streaming: {str(e)}")
-            error_chunk = ChatCompletionStreamResponse(
-                id=completion_id,
-                created=int(time.time()),
-                model=request.model,
-                choices=[
-                    ChatCompletionStreamChoice(
-                        index=0,
-                        delta=DeltaMessage(),
-                        finish_reason="error"
-                    )
-                ]
-            )
-            yield f"data: {error_chunk.json()}\n\n"
-            yield "data: [DONE]\n\n"
 
     return app
 
