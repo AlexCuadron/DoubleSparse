@@ -10,7 +10,7 @@ import uuid
 import logging
 import argparse
 import pkg_resources
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import torch
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,13 +44,6 @@ check_and_install_transformers()
 
 # Now import transformers
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 # API Models
 class ChatMessage(BaseModel):
@@ -93,27 +86,8 @@ def clean_model_path(model_path: str) -> str:
             return '/'.join(parts[idx + 1:])
     return model_path
 
-def create_app(model_path: str, heavy_const: int, group_factor: int, channel: str = "qk", offloading: bool = False):
-    """Create FastAPI app with the specified model and parameters."""
-    # Clean model path
-    model_path = clean_model_path(model_path)
-    # Initialize FastAPI app
-    app = FastAPI(
-        title="DoubleSparse API",
-        description="OpenAI-compatible REST API for LLM inference using DoubleSparse with sparse attention",
-        version="1.0.0"
-    )
-
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    # Load model and convert to sparse attention
+def load_model(model_path: str, heavy_const: int, group_factor: int, channel: str = "qk") -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
+    """Load and prepare the model with sparse attention."""
     try:
         logger.info(f"Loading model from {model_path}...")
         kwargs = {"torch_dtype": torch.float16, "device_map": "auto"}
@@ -134,37 +108,66 @@ def create_app(model_path: str, heavy_const: int, group_factor: int, channel: st
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         logger.info("Model loaded successfully")
 
-    # Load channel config if available
-    channel_path = os.path.join("config", model_path.split('/')[-1] + ".json")
-    channel_config = None
-    if os.path.exists(channel_path):
-        with open(channel_path, "r") as f:
-            channel_config = json.load(f)
+        # Load channel config if available
+        channel_path = os.path.join("config", model_path.split('/')[-1] + ".json")
+        channel_config = None
+        if os.path.exists(channel_path):
+            with open(channel_path, "r") as f:
+                channel_config = json.load(f)
 
-    # Detect architecture from config
-    if "Llama" in config.__class__.__name__:
-        from evaluation.modify_llama import convert_kvcache_llama_heavy_recent, convert_llama_channel_config
-        logger.info("Detected LLaMA architecture")
-        model = convert_kvcache_llama_heavy_recent(model, config, heavy_const, group_factor)
-        if channel_config:
-            model = convert_llama_channel_config(model, channel_config, channel)
-    elif "Mistral" in config.__class__.__name__:
-        from evaluation.modify_mistral import convert_kvcache_mistral_heavy_recent, convert_mistral_channel_config
-        logger.info("Detected Mistral architecture")
-        model = convert_kvcache_mistral_heavy_recent(model, config, heavy_const, group_factor)
-        if channel_config:
-            model = convert_mistral_channel_config(model, channel_config, channel)
-    elif "Qwen2" in config.__class__.__name__:
-        from evaluation.modify_qwen2 import convert_kvcache_qwen2_heavy_recent, convert_qwen2_channel_config
-        logger.info("Detected Qwen2 architecture")
-        model = convert_kvcache_qwen2_heavy_recent(model, config, heavy_const, group_factor)
-        if channel_config:
-            model = convert_qwen2_channel_config(model, channel_config, channel)
-    else:
-        raise ValueError(f"Unsupported model architecture: {config.__class__.__name__}")
+        # Detect architecture from config
+        if "Llama" in config.__class__.__name__:
+            from evaluation.modify_llama import convert_kvcache_llama_heavy_recent, convert_llama_channel_config
+            logger.info("Detected LLaMA architecture")
+            model = convert_kvcache_llama_heavy_recent(model, config, heavy_const, group_factor)
+            if channel_config:
+                model = convert_llama_channel_config(model, channel_config, channel)
+        elif "Mistral" in config.__class__.__name__:
+            from evaluation.modify_mistral import convert_kvcache_mistral_heavy_recent, convert_mistral_channel_config
+            logger.info("Detected Mistral architecture")
+            model = convert_kvcache_mistral_heavy_recent(model, config, heavy_const, group_factor)
+            if channel_config:
+                model = convert_mistral_channel_config(model, channel_config, channel)
+        elif "Qwen2" in config.__class__.__name__:
+            from evaluation.modify_qwen2 import convert_kvcache_qwen2_heavy_recent, convert_qwen2_channel_config
+            logger.info("Detected Qwen2 architecture")
+            model = convert_kvcache_qwen2_heavy_recent(model, config, heavy_const, group_factor)
+            if channel_config:
+                model = convert_qwen2_channel_config(model, channel_config, channel)
+        else:
+            raise ValueError(f"Unsupported model architecture: {config.__class__.__name__}")
 
-    model.eval()
-    logger.info(f"Model loaded with sparse attention (heavy_const={heavy_const}, group_factor={group_factor})")
+        model.eval()
+        logger.info(f"Model loaded with sparse attention (heavy_const={heavy_const}, group_factor={group_factor})")
+        return model, tokenizer
+
+    except Exception as e:
+        logger.error(f"Error loading model: {str(e)}")
+        raise
+
+def create_app(model_path: str, heavy_const: int, group_factor: int, channel: str = "qk", offloading: bool = False):
+    """Create FastAPI app with the specified model and parameters."""
+    # Clean model path
+    model_path = clean_model_path(model_path)
+
+    # Initialize FastAPI app
+    app = FastAPI(
+        title="DoubleSparse API",
+        description="OpenAI-compatible REST API for LLM inference using DoubleSparse with sparse attention",
+        version="1.0.0"
+    )
+
+    # Add CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Load model
+    model, tokenizer = load_model(model_path, heavy_const, group_factor, channel)
 
     def _prepare_prompt(messages: List[Dict[str, str]]) -> str:
         """Convert chat messages to a single prompt string."""
